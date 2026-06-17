@@ -1,0 +1,11 @@
+[package]
+name = "WebDetector"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+comfy-table = "7.1"       # For beautiful table rendering
+dialoguer = "0.11"        # For the interactive arrow-key selection menu
+regex = "1.10"            # For parsing `ip addr show` output
+rpassword = "7.3"         # For securely prompting the root password
+console = "0.15"          # For handling terminal key events ('e' to exit)
