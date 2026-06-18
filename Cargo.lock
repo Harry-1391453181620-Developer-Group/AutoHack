@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "WebDetector"
+name = "AutoHack"
 version = "0.1.0"
 dependencies = [
  "comfy-table",

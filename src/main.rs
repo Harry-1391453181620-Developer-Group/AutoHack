@@ -1,5 +1,5 @@
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_BORDERS_ONLY, Cell, Color, Table};
-use console::Term;
+use console::{style, Term};
 use dialoguer::{theme::ColorfulTheme, Select};
 use regex::Regex;
 use rpassword::prompt_password;
@@ -18,7 +18,17 @@ fn main() {
     let term = Term::stdout();
     let _ = term.show_cursor();
 
-    println!("=== WSL Network Detector ===\n");
+    println!("{}", style(r#"
+ █████╗ ██╗   ██╗████████╗ ██████╗ ██╗  ██╗ █████╗  ██████╗██╗  ██╗
+██╔══██╗██║   ██║╚══██╔══╝██╔═══██╗██║  ██║██╔══██╗██╔════╝██║ ██╔╝
+███████║██║   ██║   ██║   ██║   ██║███████║███████║██║     █████╔╝
+██╔══██║██║   ██║   ██║   ██║   ██║██╔══██║██╔══██║██║     ██╔═██╗
+██║  ██║╚██████╔╝   ██║   ╚██████╔╝██║  ██║██║  ██║╚██████╗██║  ██╗
+╚═╝  ╚═╝ ╚═════╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
+                                                                      -- By Harry-1391453181620 DG
+    "#).cyan().bold());
+    println!("{}", style("    WSL Active Network Scanner & IP Enumerator • v0.1.0\n").dim());
+    println!("{}", style("─────────────────────────────────────────────────────────────────────────────────────────────────────").dim());
 
     // 1. Securely ask for the WSL root password
     let password = prompt_password("Enter WSL root password: ").expect("Failed to read password");
@@ -169,7 +179,7 @@ fn main() {
     }
 
     // 8. Secure Exit Gate
-    println!("\n🚀 Done! Press the [e] key to close this terminal window.");
+    println!("\n Done! Press the [e] key to close this terminal window.");
     loop {
         match term.read_key() {
             Ok(console::Key::Char('e') | console::Key::Char('E')) => {
