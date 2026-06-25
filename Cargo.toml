@@ -9,3 +9,11 @@ dialoguer = "0.11"        # For the interactive arrow-key selection menu
 regex = "1.10"            # For parsing `ip addr show` output
 rpassword = "7.3"         # For securely prompting the root password
 console = "0.15"          # For handling terminal key events ('e' to exit)
+
+[build-dependencies]
+winres = "0.1"
+
+[package.metadata.bundle]
+name = "AutoHack"
+identifier = "com.harry-1391453181620-developer-group.autohack"
+icon = ["logo.ico"]
