@@ -3,6 +3,7 @@ use console::{style, Term};
 use dialoguer::{theme::ColorfulTheme, Select};
 use regex::Regex;
 use rpassword::prompt_password;
+use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::process::Command;
 use std::time::Duration;
@@ -12,6 +13,20 @@ struct Interface {
     name: String,
     subnet: Option<String>,
     enabled: bool,
+}
+
+struct DiscoveredHost {
+    ip: String,
+    mac: String,
+    vendor: String,
+    interface: String, // which interface it was found on
+}
+
+struct PortInfo {
+    port: u16,
+    protocol: String, // "tcp" or "udp"
+    state: String,
+    service: String,
 }
 
 fn main() {
@@ -27,7 +42,7 @@ fn main() {
 ╚═╝  ╚═╝ ╚═════╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
                                                                       -- By Harry-1391453181620 DG
     "#).cyan().bold());
-    println!("{}", style("    WSL Active Network Scanner & IP Enumerator • v0.1.0\n").dim());
+    println!("{}", style("    WSL Active Network Scanner & IP Enumerator • v0.2.0\n").dim());
     println!("{}", style("─────────────────────────────────────────────────────────────────────────────────────────────────────").dim());
 
     // 1. Securely ask for the WSL root password
@@ -105,31 +120,35 @@ fn main() {
 
     println!("\n{table}\n");
 
-    // 5. Render Interactive Menu
+    // 5. Render Interactive Menu for first-phase (netdiscover)
     let mut options = vec!["All (Scan all valid subnets)".to_string()];
     options.extend(interfaces.iter().map(|i| i.name.clone()));
 
     let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Which do you want to detect?")
+        .with_prompt("Which interface(s) do you want to discover?")
         .default(0)
         .items(&options)
         .interact()
         .unwrap();
 
-    // 6. Filter Targets
     let targets: Vec<&Interface> = if selection == 0 {
         interfaces.iter().filter(|i| i.subnet.is_some()).collect()
     } else {
         vec![&interfaces[selection - 1]]
     };
 
-    // 7. Execute netdiscover with non-interactive parsing mode (-P)
-    for target in targets {
+    // We'll collect all discovered hosts across all selected interfaces
+    let mut all_hosts: Vec<DiscoveredHost> = Vec::new();
+
+    // 6. Execute netdiscover on each target
+    for target in &targets {
         if let Some(subnet) = &target.subnet {
             println!("\nScanning [{}] on subnet [{}]... Please wait...", target.name, subnet);
 
-            // Using the -P flag to force a single clean active scan that exits automatically
-            let cmd = format!("echo '{}' | sudo -S netdiscover -i {} -r {} -P", password, target.name, subnet);
+            let cmd = format!(
+                "echo '{}' | sudo -S netdiscover -i {} -r {} -P",
+                password, target.name, subnet
+            );
 
             let scan_output = Command::new("wsl")
                 .args(["-e", "bash", "-c", &cmd])
@@ -138,7 +157,6 @@ fn main() {
 
             let scan_str = String::from_utf8_lossy(&scan_output.stdout);
 
-            // Prepare a tidy table for the discovered IPs
             let mut result_table = Table::new();
             result_table
                 .load_preset(UTF8_BORDERS_ONLY)
@@ -151,18 +169,24 @@ fn main() {
 
             let mut hosts_found = false;
 
-            // Extract rows containing unique discovered targets safely
             for line in scan_str.lines() {
                 let tokens: Vec<&str> = line.split_whitespace().collect();
-                // A valid row contains at least: IP, MAC, Count, Len, Vendor
                 if tokens.len() >= 5 {
                     if tokens[0].parse::<Ipv4Addr>().is_ok() {
-                        let ip = tokens[0];
-                        let mac = tokens[1];
-                        let vendor = tokens[4..].join(" "); // Re-join multi-word vendors cleanly
+                        let ip = tokens[0].to_string();
+                        let mac = tokens[1].to_string();
+                        let vendor = tokens[4..].join(" ");
 
-                        result_table.add_row(vec![ip, mac, &vendor]);
+                        result_table.add_row(vec![&ip, &mac, &vendor]);
                         hosts_found = true;
+
+                        // Store for later selection
+                        all_hosts.push(DiscoveredHost {
+                            ip,
+                            mac,
+                            vendor,
+                            interface: target.name.clone(),
+                        });
                     }
                 }
             }
@@ -171,24 +195,164 @@ fn main() {
             if hosts_found {
                 println!("{result_table}");
             } else {
-                println!("⚠️ No active hosts responded on this network segment.");
+                println!("No active hosts responded on this network segment.");
             }
         } else {
             println!("\n[!] Skipping interface '{}': No valid subnet found.", target.name);
         }
     }
 
-    // 8. Secure Exit Gate
-    println!("\n Done! Press the [e] key to close this terminal window.");
+    // 7. Check if any hosts were discovered
+    if all_hosts.is_empty() {
+        println!("\nNo hosts discovered. Exiting.");
+        wait_for_exit();
+        return;
+    }
+
+    // Deduplicate IPs (in case same IP appears on multiple interfaces)
+    let mut unique_ips: Vec<String> = all_hosts
+        .iter()
+        .map(|h| h.ip.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    unique_ips.sort();
+
+    // 8. Present second-phase selection: specific IP or All
+    let mut ip_options: Vec<String> = unique_ips.clone();
+    ip_options.push("All (time may be long)".to_string());
+
+    let ip_selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select an IP for detailed scanning, or choose All")
+        .default(0)
+        .items(&ip_options)
+        .interact()
+        .unwrap();
+
+    // Define port lists as constants
+    const PORTS_FULL: &str = "20,21,22,23,24,53,67,68,69,80,110,123,137,138,139,143,161,162,389,443,445,465,514,587,636,993,995,1080,1433,3306,3389,8080,5432,6379,27017";
+    const PORTS_TCP_ONLY: &str = "20,21,22,23,80,110,139,143,443,445,465,587,636,993,995,1080,1433,3306,3389,8080,5432,6379,27017";
+    // For UDP we use the full list (which includes UDP-specific ones like 67,68,123, etc.)
+
+    if ip_selection < unique_ips.len() {
+        // Single IP scan
+        let ip = &unique_ips[ip_selection];
+        println!("\nStarting detailed scan on target {} ...", ip);
+
+        let cmd = format!(
+            "echo '{}' | sudo -S nmap -sU -sS --min-rate 1000 -p {} {}",
+            password, PORTS_FULL, ip
+        );
+
+        let nmap_output = Command::new("wsl")
+            .args(["-e", "bash", "-c", &cmd])
+            .output()
+            .expect("Failed to execute nmap");
+
+        let nmap_str = String::from_utf8_lossy(&nmap_output.stdout);
+        let ports = parse_nmap_output(&nmap_str);
+
+        display_port_table(&ports, &format!("Results for {}", ip));
+    } else {
+        // All: scan each selected interface's subnet with TCP and UDP
+        for target in &targets {
+            if let Some(subnet) = &target.subnet {
+                println!("\n--- Scanning interface {} on subnet {} ---", target.name, subnet);
+
+                // TCP scan
+                let cmd_tcp = format!(
+                    "echo '{}' | sudo -S nmap -e {} {} -sS -T4 --min-rate 1000 -p {}",
+                    password, target.name, subnet, PORTS_TCP_ONLY
+                );
+                let out_tcp = Command::new("wsl")
+                    .args(["-e", "bash", "-c", &cmd_tcp])
+                    .output()
+                    .expect("Failed to run TCP nmap");
+                let tcp_str = String::from_utf8_lossy(&out_tcp.stdout);
+                let tcp_ports = parse_nmap_output(&tcp_str);
+
+                // UDP scan
+                let cmd_udp = format!(
+                    "echo '{}' | sudo -S nmap -e {} {} -sU --min-rate 1000 -p {}",
+                    password, target.name, subnet, PORTS_FULL
+                );
+                let out_udp = Command::new("wsl")
+                    .args(["-e", "bash", "-c", &cmd_udp])
+                    .output()
+                    .expect("Failed to run UDP nmap");
+                let udp_str = String::from_utf8_lossy(&out_udp.stdout);
+                let udp_ports = parse_nmap_output(&udp_str);
+
+                // Combine both sets
+                let mut combined = tcp_ports;
+                combined.extend(udp_ports);
+                // Sort by port number then protocol
+                combined.sort_by_key(|p| (p.port, p.protocol.clone()));
+
+                display_port_table(&combined, &format!("Interface {} ({})", target.name, subnet));
+            }
+        }
+    }
+
+    wait_for_exit();
+}
+
+fn parse_nmap_output(output: &str) -> Vec<PortInfo> {
+    let re = Regex::new(r"^(\d+)/(tcp|udp)\s+(\S+)\s+(.*)$").unwrap();
+    let mut ports = Vec::new();
+
+    for line in output.lines() {
+        if let Some(caps) = re.captures(line) {
+            let port: u16 = caps[1].parse().unwrap_or(0);
+            let protocol = caps[2].to_string();
+            let state = caps[3].to_string();
+            let service = caps[4].trim().to_string();
+            if port > 0 {
+                ports.push(PortInfo { port, protocol, state, service });
+            }
+        }
+    }
+    ports
+}
+
+fn display_port_table(ports: &[PortInfo], title: &str) {
+    if ports.is_empty() {
+        println!("{}: No open ports detected.", title);
+        return;
+    }
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_BORDERS_ONLY)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            Cell::new("Port").fg(Color::Cyan),
+            Cell::new("Protocol").fg(Color::Cyan),
+            Cell::new("State").fg(Color::Cyan),
+            Cell::new("Service").fg(Color::Cyan),
+        ]);
+
+    for p in ports {
+        table.add_row(vec![
+            Cell::new(&p.port.to_string()),
+            Cell::new(&p.protocol),
+            Cell::new(&p.state),
+            Cell::new(&p.service),
+        ]);
+    }
+
+    println!("\n{}", title);
+    println!("{table}");
+}
+
+fn wait_for_exit() {
+    println!("\nDone. Press the [e] key to close this terminal window.");
+    let term = Term::stdout();
     loop {
         match term.read_key() {
-            Ok(console::Key::Char('e') | console::Key::Char('E')) => {
-                break;
-            }
+            Ok(console::Key::Char('e') | console::Key::Char('E')) => break,
             Ok(_) => {}
-            Err(_) => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
         }
     }
 }
